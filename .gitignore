@@ -1,0 +1,19 @@
+# Model weights — too large for git
+models/
+Qwen3.5-4B/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Env
+.env
+*.env
+
+# OS
+.DS_Store
