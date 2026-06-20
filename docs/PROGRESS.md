@@ -55,17 +55,49 @@ Durable checkpoint log. Each agent appends its outcome here.
 - sample generation: prompt=`SELECT 1;` → `-- 1. 创建表` (8 tokens, model responded in Chinese SQL comment style)
 - .gitignore created; models/ and Qwen3.5-4B/ excluded from git
 
-## CP5 — QLoRA fine-tune 🏃 2026-06-20
-- status: running (PID 16142)
+## CP5 — QLoRA fine-tune ⏹️ 2026-06-20 (STOPPED — Colab T4 supersedes)
+- status: stopped (M1 training terminated; superseded by Colab T4 bundle)
+- final iter: 140 | final loss: 0.506
 - base: models/qwen-4bit (Qwen3.5-4B, 4-bit)
 - framework: mlx-lm 0.31.3
-- hyperparams: num-layers=4, batch-size=1, iters=1200, lr=1e-4, max-seq-length=512, grad-checkpoint=true
-- mask-prompt: disabled (--mask-prompt causes nan loss at 512 truncation; system+schema fills most tokens)
-- smoke test: train_loss 1.469→0.937 (20 iters), val 2.224→1.172, 0.14 it/s, peak 10.8 GB, seq-len 512, num-layers 4
-- OOM at: seq-len=1024 + num-layers=8 (Metal OOM abort)
-- adapter-path: adapters/qwen-sql (gitignored)
-- ETA: ~1200 iters × 7.1s/it ≈ 2.4h
-- live metrics: docs/train_live.json (updated every 30s by metrics loop PID 24037)
+- config: configs/qwen_lora.yaml
+- adapter: adapters/qwen-sql (8.1 MB partial, preserved)
+
+### Root cause of NaN (resolved)
+- 81% of sequences exceed 512 tokens when chat-template applied
+- seq_length=512 truncated away entire assistant turn in most rows → 0/0 CE loss → NaN
+- Previous runs had no data filter; val NaN appeared at iter 1 (before any training step)
+
+### Data filter applied
+- Original: train=13015, val=915
+- Filtered to ≤512 tokens (exact tokenizer measurement): train=2616, val=129
+- Backups: data/mlx/train.full.jsonl, data/mlx/valid.full.jsonl (≤1024 intermediate)
+- Note: large sequences (complex multi-table queries) excluded; revisit with larger seq budget if GPU available
+
+### Final stable hyperparams
+- num-layers=4, batch-size=1, iters=1000, lr=2e-5, max-seq-length=512, grad-checkpoint=true
+- lr_schedule: none (0.31.3 has no YAML lr_schedule support)
+- grad_clip: none (0.31.3 has no grad_clip flag)
+- mask_prompt: not set (all tokens trained on)
+
+### Smoke test (80 iters, full filtered data)
+- Val loss iter 1: 1.671 (FINITE — root cause fixed)
+- Train loss: 1.278 → 1.109 → 0.877 → 0.894 → 0.913 → 0.718 → 0.712 → 0.740
+- Val loss iter 80: 1.045
+- It/sec: ~0.15-0.17 | Peak mem: 10.994 GB
+- OOM attempts: seq=1024 OOM, seq=768 OOM → settled on seq=512
+
+### Full run (iters=1000)
+- PID: 23511
+- First 4 report lines:
+  - Iter 1: Val loss 1.671, Val took 46.888s
+  - Iter 10: Train loss 1.278, LR 2.000e-05, It/sec 0.142, Peak mem 11.004 GB
+  - Iter 20: Train loss 1.109, LR 2.000e-05, It/sec 0.141
+  - Iter 30: Train loss 0.877, LR 2.000e-05, It/sec 0.150
+  - Iter 40: Train loss 0.894, LR 2.000e-05, It/sec 0.170
+- it/sec: ~0.15 | ETA: ~1000/0.15 ≈ 6,667s ≈ 1.9h
+- adapter-path: adapters/qwen-sql
+- live metrics: docs/train_live.json, docs/train_curve.json (curve_feed PID 29423)
 - train.log: project root
 
 ## CP6 — Phase-B agent harness ✅ 2026-06-20
