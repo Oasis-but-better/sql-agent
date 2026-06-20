@@ -1,0 +1,26 @@
+# requirements-colab.txt — Colab T4 QLoRA fine-tuning dependencies
+#
+# torch is preinstalled on Colab (~2.3+); listed here for reference.
+# Install with: pip install -r requirements-colab.txt
+#
+# Pinned to versions verified for SFTTrainer prompt/completion API,
+# T4 (CC 7.5) fp16 support, and Qwen3.5-4B compatibility.
+
+# Core training stack
+transformers==4.45.2
+peft==0.12.0
+trl==0.11.4
+bitsandbytes==0.43.3
+accelerate==0.34.2
+
+# Data + tokenization
+datasets==3.0.1
+sentencepiece==0.2.0
+tokenizers==0.20.0
+
+# Utilities
+tqdm==4.66.5
+safetensors==0.4.5
+
+# torch: Colab preinstalls torch ~2.3+; do NOT reinstall unless version mismatch.
+# If needed: pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121
