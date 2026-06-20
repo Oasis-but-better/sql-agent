@@ -32,8 +32,19 @@ Durable checkpoint log. Each agent appends its outcome here.
 - correction.jsonl: data/dataset/correction.jsonl — 6,000 lines
 - runner: scripts/build_correction_set.py (resumable: skips already-written keys)
 
-## CP3 — Dataset assembly
-- status: pending
+## CP3 — Dataset assembly ✅ 2026-06-20
+- total_input: 15,000 (clean_sub=9,000 + correction=6,000)
+- dropped_duplicates (within-type dedup): 41 clean + 0 correction = 41 total
+- total_after_dedup: 14,959
+- train: 13,015 | val: 915 | test: 1,029
+- train clean/correction: 7,776/5,239 = 59.7%/40.3% (target 60/40)
+- split strategy: db-disjoint (val + test each hold out 8 distinct db_ids unseen in train)
+- test db_ids (8): academic, club_1, customers_and_invoices, european_football_2, journal_committee, performance_attendance, school_player, thrombosis_prediction
+- val db_ids (8): activity_1, codebase_community, customers_and_products_contacts, farm, loan_1, perpetrator, scientist_1, toxicology
+- disjoint verified: train∩val=0, train∩test=0, val∩test=0
+- all lines valid JSON, all lines have 'messages' key
+- outputs: data/dataset/train.jsonl, val.jsonl, test.jsonl
+- seed=42 for clean subsample (deterministic/idempotent)
 
 ## CP4 — Quantize Qwen 4-bit MLX ✅ 2026-06-20
 - mlx-lm version: 0.31.3 (mlx 0.31.2)
