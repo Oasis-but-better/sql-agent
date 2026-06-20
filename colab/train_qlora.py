@@ -190,6 +190,14 @@ def main() -> None:
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
+    # T4 fix: trainable LoRA params MUST be fp32 so their gradients are fp32.
+    # The fp16 GradScaler cannot unscale bf16 grads
+    # ("_amp_foreach_non_finite_check_and_unscale_cuda not implemented for BFloat16").
+    # Forward still runs in fp16 via autocast; only the tiny (~21M) adapter is fp32.
+    for _p in model.parameters():
+        if _p.requires_grad:
+            _p.data = _p.data.float()
+
     # -------------------------------------------------------------------------
     # Datasets
     # -------------------------------------------------------------------------
