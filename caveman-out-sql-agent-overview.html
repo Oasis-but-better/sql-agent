@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SQL-Agent — Project Overview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,300..500&family=Hanken+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --primary-color: #697541;
+    --primary-strong: #4E5830;
+    --bg-body: #F0EADC;
+    --bg-card: #FBF8F0;
+    --bg-sunken: #E8E0CF;
+    --bg-elevated: #FFFFFF;
+    --text-main: #2C2920;
+    --text-muted: #7E776A;
+    --text-faint: #A89E89;
+    --border-color: #E3DAC7;
+    --border-strong: #D4C9B2;
+    --success: #3C7752;
+    --warning: #B47E2C;
+    --danger: #B5543F;
+    --radius: 0.75rem;
+    --radius-sm: 0.5rem;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg-body);
+    color: var(--text-main);
+    font-family: 'Hanken Grotesk', system-ui, sans-serif;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+  header { margin-bottom: 2rem; }
+  h1 {
+    font-family: 'Newsreader', Georgia, serif;
+    font-weight: 400;
+    font-size: 2.5rem;
+    line-height: 1.1;
+    margin: 0 0 0.25rem;
+    letter-spacing: -0.01em;
+  }
+  .subtitle { color: var(--text-muted); font-size: 0.95rem; }
+  h2 {
+    font-family: 'Newsreader', Georgia, serif;
+    font-weight: 500;
+    font-size: 1.5rem;
+    margin: 2.25rem 0 0.75rem;
+    color: var(--text-main);
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+    margin: 1rem 0;
+  }
+  ul { margin: 0.5rem 0; padding-left: 1.25rem; }
+  li { margin: 0.35rem 0; }
+  li::marker { color: var(--primary-color); }
+  code, .mono {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 0.9em;
+    background: var(--bg-sunken);
+    padding: 0.1em 0.4em;
+    border-radius: 0.35rem;
+  }
+  pre { background: var(--bg-sunken); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 1rem; overflow:auto; }
+  pre code { background: none; padding: 0; }
+  .pill { display:inline-block; font-size:0.75rem; font-weight:600; padding:0.15rem 0.6rem; border-radius:999px; }
+  .pill-ok { background: rgba(60,119,82,0.14); color: var(--success); }
+  .pill-warn { background: rgba(180,126,44,0.16); color: var(--warning); }
+  .pill-bad { background: rgba(181,84,63,0.15); color: var(--danger); }
+  .mermaid { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius); padding: 1.25rem; margin: 1rem 0; text-align:center; }
+  a { color: var(--primary-color); }
+  hr { border: none; border-top: 1px solid var(--border-color); margin: 2rem 0; }
+  footer { margin-top: 3rem; color: var(--text-faint); font-size: 0.8rem; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+  @media (max-width:640px){ .grid{ grid-template-columns:1fr; } }
+  .od { border-left:3px solid var(--primary-color); padding-left:0.9rem; margin:0.9rem 0; }
+  .od .rec { color: var(--success); font-weight:600; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>SQL-Agent</h1>
+      <div class="subtitle">Dynamic, schema-agnostic natural-language → SQL with execution-driven self-correction · high-level overview · 2026-06-20</div>
+    </header>
+
+    <h2>What it is — in one breath</h2>
+    <div class="card">
+      Drop in <strong>any</strong> SQLite database. The system compiles its schema into a compact in-prompt cache, a fine-tuned small model drafts SQL, runs it, and <strong>fixes its own query from the real error</strong> — up to 3 tries. No schema is memorized in the weights. It is the generalization of the sibling <em>nanoSQL</em> project, which memorized a single schema.
+    </div>
+
+    <h2>Runtime architecture — two phases</h2>
+    <div class="mermaid">
+flowchart TD
+  U[Drop a .sqlite file] --> A[Phase A: Schema Compiler]
+  A -->|PRAGMA: DDL + foreign keys + 3 sample rows| C[db_metadata_cache.json<br/>compact semantic cache]
+  Q[User question] --> D[Phase B: Draft SQL]
+  C --> D
+  D --> E{Execute on SQLite}
+  E -->|rows returned| OK[Return result]
+  E -->|syntax / runtime error| R1[Inject real traceback]
+  E -->|empty result| R2[Inject empty warning]
+  R1 --> D
+  R2 --> D
+  E -.->|hard stop at 3 tries| STOP[Give up gracefully]
+    </div>
+
+    <h2>The models</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="pill pill-ok">PRIMARY</span>
+        <h3 style="margin:.5rem 0 .25rem;font-family:Newsreader;font-weight:500;">Qwen3.5-4B</h3>
+        ~4B params · 8.7 GB downloaded · QLoRA fits 16 GB M1 comfortably.
+      </div>
+      <div class="card">
+        <span class="pill pill-warn">STRETCH</span>
+        <h3 style="margin:.5rem 0 .25rem;font-family:Newsreader;font-weight:500;">gemma-4-E4B-it</h3>
+        ~7.5B real params · 15 GB · QLoRA on 16 GB M1 is tight, may OOM. Attempt only if it fits.
+      </div>
+    </div>
+    <ul>
+      <li>Both quantized <strong>bf16 → 4-bit MLX</strong> before inference and training.</li>
+      <li>Inference runs on <strong>MLX / Metal</strong>. Ollama removed (45 GB reclaimed).</li>
+    </ul>
+
+    <h2>How we build the training data</h2>
+    <p class="subtitle">Target: ~15k verified examples · 60% clean / 40% self-correction · spanning ~210 real databases.</p>
+    <div class="mermaid">
+flowchart TD
+  S[Spider 744 DBs + gold SQL] --> G[Gold pairs]
+  B[BIRD dev 11 DBs + gold SQL] --> G
+  G --> CL[Clean set 60 percent<br/>reuse gold, no LLM generation]
+  CL --> V1{Execute vs gold<br/>result-set match}
+  G --> GEN[Correction set 40 percent<br/>haiku + sonnet waves]
+  GEN --> WRONG[Capture a wrong attempt<br/>+ real traceback]
+  WRONG --> V2{Final fix matches gold}
+  V1 -->|pass| POOL[Verified pool]
+  V2 -->|pass| POOL
+  POOL --> DIV{Dense + diverse?<br/>per-DB + query-type + difficulty}
+  DIV -->|no, backfill gaps| GEN
+  DIV -->|yes, 15k reached| OUT[train / val / test JSONL]
+    </div>
+    <ul>
+      <li><strong>Clean 60%</strong> comes from the human-verified gold SQL the datasets already ship — reformatted, not generated. Cheaper, higher quality.</li>
+      <li><strong>Correction 40%</strong> is the real generation work: haiku does cheap high-volume candidates, sonnet handles hard fixes. Every example is <strong>execution-verified</strong> against the real database.</li>
+      <li>Validity = <strong>result-set matches gold</strong> (not merely "non-empty"). Tracebacks are <strong>real</strong>, never invented.</li>
+      <li>Stored as <strong>model-agnostic message lists</strong>, rendered to each model's chat template at train time.</li>
+    </ul>
+
+    <h2>Open decisions — your call</h2>
+    <div class="card">
+      <div class="od"><strong>OD1 · Clean-set augmentation.</strong> Gold reformat only <span class="rec">(recommended)</span> &nbsp;vs&nbsp; gold + haiku paraphrases of questions for extra diversity.</div>
+      <div class="od"><strong>OD2 · Source of the "wrong attempt".</strong> Run the real base model and capture its genuine failures <span class="rec">(recommended — teaches it to fix its own mistakes)</span> &nbsp;vs&nbsp; programmatic perturbation of gold &nbsp;vs&nbsp; sonnet-authored errors &nbsp;vs&nbsp; hybrid.</div>
+      <div class="od"><strong>OD3 · Which model.</strong> Qwen primary + gemma stretch <span class="rec">(recommended)</span> &nbsp;vs&nbsp; push both equally despite OOM risk.</div>
+      <div class="od"><strong>OD4 · BIRD scope.</strong> Dev only, 11 DBs <span class="rec">(recommended — disk)</span> &nbsp;vs&nbsp; add BIRD train, ~69 big DBs.</div>
+      <div class="od"><strong>OD5 · Dataset size.</strong> Hold 15k <span class="rec">(recommended)</span> &nbsp;vs&nbsp; scale up to available gold.</div>
+    </div>
+
+    <h2>The work — where we are</h2>
+    <div class="mermaid">
+flowchart LR
+  M1[1 Setup<br/>done] --> M2[2 Schema compiler]
+  M2 --> M3[3 Clean set from gold]
+  M3 --> M4[4 Correction set<br/>generation run]
+  M4 --> M5[5 Assemble + split]
+  M5 --> M6[6 Fine-tune QLoRA]
+  M6 --> M7[7 Phase-B agent loop]
+  M7 --> M8[8 Evaluate]
+    </div>
+    <ul>
+      <li><span class="pill pill-ok">DONE</span> &nbsp;Setup — ollama wiped (45 GB free), Spider + BIRD downloaded with gold, design spec converged.</li>
+      <li><span class="pill pill-warn">GATED</span> &nbsp;Steps 4 (generation run), 6 (fine-tune), 7 (harness) wait for <strong>your approval</strong> — they are the token/compute spend.</li>
+      <li>Evaluated on: <strong>execution accuracy</strong>, <strong>loop-resolution rate</strong> (the self-correction skill), and <strong>TTFT</strong> (cache vs raw DDL).</li>
+    </ul>
+
+    <hr/>
+    <div class="card" style="border-color:var(--primary-color);">
+      <strong>Next step:</strong> you review this + the open decisions. On your approval I begin implementation — generation run, QLoRA fine-tuning, and the Phase-B agent harness. Full detail in <code>docs/superpowers/specs/2026-06-20-sql-agent-project-design.md</code>.
+    </div>
+
+    <footer>Rendered by caveman-html · ERP design system</footer>
+  </div>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'base',
+      themeVariables: {
+        fontFamily: 'Hanken Grotesk, sans-serif',
+        background: '#F0EADC',
+        primaryColor: '#FBF8F0',
+        primaryBorderColor: '#697541',
+        primaryTextColor: '#2C2920',
+        secondaryColor: '#E8E0CF',
+        tertiaryColor: '#F0EADC',
+        lineColor: '#7E776A',
+        clusterBkg: '#F0EADC',
+        clusterBorder: '#D4C9B2',
+        edgeLabelBackground: '#FBF8F0'
+      }
+    });
+  </script>
+</body>
+</html>
