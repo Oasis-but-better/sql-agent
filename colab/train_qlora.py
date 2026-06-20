@@ -7,11 +7,19 @@ DESIGN DECISIONS (T4-specific, compute capability 7.5):
   - prepare_model_for_kbit_training + gradient_checkpointing (reduces VRAM).
   - use_cache=False required alongside gradient checkpointing.
   - packing=False — packing breaks completion-only loss masking.
-  - DataCollatorForCompletionOnlyLM: guarantees prompt tokens get label=-100,
-    loss computed only on completion (gold SQL). This satisfies the requirement
-    that the WRONG assistant SQL in correction chains is never a training target.
+  - completion_only_loss=True (SFTConfig, trl>=1.0): native prompt/completion
+    masking — prompt tokens get label=-100, loss only on completion (gold SQL).
+    This satisfies the requirement that wrong assistant SQL in correction chains
+    (which lives in the prompt field from prepare_data.py) is never a training target.
   - LoRA targets all projection layers for maximum coverage.
   - Resume-from-checkpoint: pass --resume-from-checkpoint path or "latest".
+
+REQUIRES:
+  - transformers>=5.2.0  (qwen3_5 model_type added in v5.2.0)
+  - trl>=1.0.0           (SFTConfig stable API with completion_only_loss)
+  - peft>=0.19.0
+  - accelerate>=1.4.0
+  - bitsandbytes>=0.49.0
 
 Usage (Colab):
     python train_qlora.py \
@@ -95,10 +103,19 @@ def main() -> None:
         AutoModelForCausalLM,
         AutoTokenizer,
         BitsAndBytesConfig,
-        TrainingArguments,
     )
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
-    from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
+
+    # SFTConfig is the unified API in trl>=1.0 (absorbs TrainingArguments + SFT params).
+    # Fallback to separate TrainingArguments + SFTTrainer for older trl, but trl>=1.0
+    # is required by requirements-colab.txt so the fallback is a safety net only.
+    try:
+        from trl import SFTTrainer, SFTConfig
+        _HAS_SFTCONFIG = True
+    except ImportError:
+        from trl import SFTTrainer
+        from transformers import TrainingArguments as SFTConfig  # type: ignore[assignment]
+        _HAS_SFTCONFIG = False
 
     print(f"torch        : {torch.__version__}")
     print(f"transformers : {transformers.__version__}")
@@ -130,7 +147,7 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(
         args.base_model,
         trust_remote_code=True,
-        padding_side="right",   # required for DataCollatorForCompletionOnlyLM
+        padding_side="right",
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -153,6 +170,8 @@ def main() -> None:
 
     # -------------------------------------------------------------------------
     # LoRA config
+    # Qwen3.5-4B has hybrid linear+full attention layers; q/k/v/o/gate/up/down
+    # projections are present in all layer types and confirmed as valid targets.
     # -------------------------------------------------------------------------
     lora_config = LoraConfig(
         r=args.lora_r,
@@ -178,33 +197,26 @@ def main() -> None:
     print(f"  val:   {len(val_dataset)} examples")
 
     # -------------------------------------------------------------------------
-    # DataCollator — completion-only loss
-    # Masks prompt tokens (label=-100). Loss only on completion (gold SQL).
-    # This is THE correctness guarantee: wrong SQL in correction chains is prompt,
-    # so it gets masked. Only the final gold SQL is trained on.
-    #
-    # response_template: the token sequence that marks the start of the completion.
-    # After enable_thinking=False rendering, prompt ends with:
-    #   <|im_start|>assistant\n<think>\n\n</think>\n\n
-    # So completion starts immediately after "</think>\n\n".
-    # We use the assistant header + think block as response template.
-    # -------------------------------------------------------------------------
-    response_template = "<|im_start|>assistant\n<think>\n\n</think>\n\n"
-    collator = DataCollatorForCompletionOnlyLM(
-        response_template=response_template,
-        tokenizer=tokenizer,
-    )
-
-    # -------------------------------------------------------------------------
     # Output dir
     # -------------------------------------------------------------------------
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # -------------------------------------------------------------------------
-    # TrainingArguments — fp16, T4-tuned
+    # SFTConfig — fp16, T4-tuned.
+    #
+    # completion_only_loss=True: native prompt/completion masking (trl>=1.0).
+    #   Labels are -100 for prompt tokens; loss computed only on completion
+    #   (gold SQL). This is the correctness guarantee for correction chains:
+    #   the wrong assistant SQL lives in the prompt field → automatically masked.
+    #
+    # max_length replaces the old max_seq_length (deprecated in trl>=0.16).
+    # eval_strategy replaces evaluation_strategy (renamed in transformers>=4.46).
+    # processing_class replaces tokenizer (deprecated in trl>=0.16, removed 0.17+).
+    #
+    # packing=False — required for completion_only_loss to work correctly.
     # -------------------------------------------------------------------------
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=str(output_dir),
         num_train_epochs=args.num_epochs,
         max_steps=args.max_steps,
@@ -216,7 +228,7 @@ def main() -> None:
         fp16=True,       # T4 requires fp16; bf16=False
         bf16=False,
         logging_steps=args.logging_steps,
-        evaluation_strategy="steps",
+        eval_strategy="steps",          # renamed from evaluation_strategy in transformers>=4.46
         eval_steps=args.eval_steps,
         save_strategy="steps",
         save_steps=args.save_steps,
@@ -225,26 +237,58 @@ def main() -> None:
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         dataloader_num_workers=args.dataloader_num_workers,
-        report_to="none",   # disable wandb/tensorboard by default
+        report_to="none",               # disable wandb/tensorboard by default
+        seed=args.seed,
+        remove_unused_columns=False,
+        # SFT-specific params (trl>=1.0 SFTConfig fields)
+        max_length=args.max_seq_length, # replaces deprecated max_seq_length
+        packing=False,                  # required with completion_only_loss
+        completion_only_loss=True,      # mask prompt tokens, train on completion only
+        dataset_text_field=None,        # use prompt+completion columns directly
+    ) if _HAS_SFTCONFIG else SFTConfig(
+        # Fallback: pure TrainingArguments (should not be reached with trl>=1.0)
+        output_dir=str(output_dir),
+        num_train_epochs=args.num_epochs,
+        max_steps=args.max_steps,
+        per_device_train_batch_size=args.per_device_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        learning_rate=args.learning_rate,
+        warmup_ratio=args.warmup_ratio,
+        lr_scheduler_type=args.lr_scheduler,
+        fp16=True,
+        bf16=False,
+        logging_steps=args.logging_steps,
+        eval_strategy="steps",
+        eval_steps=args.eval_steps,
+        save_strategy="steps",
+        save_steps=args.save_steps,
+        save_total_limit=3,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        dataloader_num_workers=args.dataloader_num_workers,
+        report_to="none",
         seed=args.seed,
         remove_unused_columns=False,
     )
 
     # -------------------------------------------------------------------------
     # SFTTrainer
-    # packing=False — required with DataCollatorForCompletionOnlyLM
+    # processing_class= replaces deprecated tokenizer= (trl>=0.16).
+    # Native prompt/completion masking via completion_only_loss=True in SFTConfig.
+    # No data collator needed — SFTTrainer handles masking internally when
+    # dataset has "prompt" + "completion" columns and completion_only_loss=True.
     # -------------------------------------------------------------------------
-    trainer = SFTTrainer(
+    trainer_kwargs: dict = dict(
         model=model,
-        tokenizer=tokenizer,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        data_collator=collator,
         args=training_args,
-        max_seq_length=args.max_seq_length,
-        dataset_text_field=None,   # use prompt+completion columns directly
-        packing=False,
     )
+    # processing_class replaces tokenizer in trl>=0.16
+    trainer_kwargs["processing_class"] = tokenizer
+
+    trainer = SFTTrainer(**trainer_kwargs)
 
     # -------------------------------------------------------------------------
     # Train

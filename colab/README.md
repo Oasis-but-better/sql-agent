@@ -64,10 +64,21 @@ Runtime → Change runtime type → **T4 GPU**. Verify with `!nvidia-smi`.
 
 ## Step 4 — Install dependencies
 
+> **Qwen3.5 requires `transformers>=5.2.0`** — the `qwen3_5` model type was added in v5.2.0.
+> Older transformers (e.g., 4.45.x) fail with: `ValueError: model type 'qwen3_5' not recognized`.
+
+```bash
+pip install "transformers>=5.2.0" "peft>=0.19.0" "trl>=1.0.0" \
+    "bitsandbytes>=0.49.0" "accelerate>=1.4.0" \
+    "datasets>=4.7.0" "tokenizers>=0.21.0" "sentencepiece>=0.2.0" "safetensors>=0.4.5"
+```
+
+Or use the requirements file:
 ```python
 !pip install -r requirements-colab.txt
 ```
 
+**Restart the Colab runtime after installing** (Runtime → Restart session).
 Do NOT reinstall torch unless the Colab default causes version conflicts.
 
 ---
