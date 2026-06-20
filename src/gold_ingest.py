@@ -80,3 +80,60 @@ def build_message_list(record: GoldRecord, schema_cache: dict) -> list[dict]:
         {"role": "user",      "content": record.question},
         {"role": "assistant", "content": record.gold_sql},
     ]
+
+
+from src.schema_cache import compile_schema_cache
+from src.verify import verify_sql
+
+
+def build_clean_examples(
+    records: list[GoldRecord],
+    db_root: str,
+) -> tuple[list[dict], dict]:
+    """Verify each GoldRecord against its .sqlite and emit clean examples.
+
+    DB path resolution: <db_root>/<db_id>/<db_id>.sqlite (Spider layout).
+    BIRD path is identical: <db_root>/<db_id>/<db_id>.sqlite.
+
+    Discards records whose gold SQL fails to execute on the real DB.
+    Returns (examples, stats) where stats = {total, accepted,
+    discarded_gold_error, discarded_db_not_found}.
+    """
+    stats = {
+        "total": len(records),
+        "accepted": 0,
+        "discarded_gold_error": 0,
+        "discarded_db_not_found": 0,
+    }
+    examples = []
+
+    for rec in records:
+        db_path = str(Path(db_root) / rec.db_id / f"{rec.db_id}.sqlite")
+        if not Path(db_path).exists():
+            stats["discarded_db_not_found"] += 1
+            continue
+
+        try:
+            verify_result = verify_sql(db_path, rec.gold_sql, rec.gold_sql)
+        except ValueError:
+            # Gold SQL itself failed
+            stats["discarded_gold_error"] += 1
+            continue
+
+        if not verify_result.is_valid:
+            stats["discarded_gold_error"] += 1
+            continue
+
+        cache = compile_schema_cache(db_path)
+        messages = build_message_list(rec, cache)
+        examples.append({
+            "db_id": rec.db_id,
+            "source": rec.source,
+            "difficulty": rec.difficulty,
+            "type": "clean",
+            "query_types": [],
+            "messages": messages,
+        })
+        stats["accepted"] += 1
+
+    return examples, stats
