@@ -3,7 +3,7 @@
 # Loops every 10s. Writes docs/sysstats.json each tick.
 # Proactively applies background-QoS+renice+5 on first pid discovery.
 # Escalates to renice+10 after 3 consecutive critical-mem ticks.
-# Exits after 3 consecutive empty-pid ticks.
+# Exits after 5 consecutive empty-pid ticks.
 
 set +e
 
@@ -169,8 +169,8 @@ while true; do
         critical_ticks=0
     fi
 
-    # --- D) EXIT when training gone for 3 consecutive ticks ---
-    if (( empty_ticks >= 3 )); then
+    # --- D) EXIT when training gone for 5 consecutive ticks ---
+    if (( empty_ticks >= 5 )); then
         final_note="training ended @${ts}"
         write_json "$ts" "$total_ram_gb" "$mem_free_pct" "$mem_pressure" \
             "$mem_used_gb" "$swap_used_gb" "$cpu_speed_limit_pct" "$load_avg" \
