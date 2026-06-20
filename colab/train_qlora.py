@@ -161,6 +161,9 @@ def main() -> None:
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
+        dtype=torch.float16,   # T4: force fp16 non-quant layers; Qwen3.5 config defaults to
+                               # bfloat16, which breaks the fp16 GradScaler (_amp..unscale not
+                               # implemented for BFloat16). fp16 grads match the scaler.
     )
 
     # Required for gradient checkpointing with kbit training
