@@ -39,12 +39,15 @@ def compile_schema_cache(db_path: str) -> dict:
 
     tables = []
     for tname in table_names:
+        # Quote identifier to handle reserved-keyword table names (e.g. "order")
+        qname = '"' + tname.replace('"', '""') + '"'
+
         # Columns
-        cur.execute(f"PRAGMA table_info({tname})")
+        cur.execute(f"PRAGMA table_info({qname})")
         columns = [{"name": row[1], "type": row[2]} for row in cur.fetchall()]
 
         # FK edges: PRAGMA foreign_key_list returns (id, seq, table, from, to, ...)
-        cur.execute(f"PRAGMA foreign_key_list({tname})")
+        cur.execute(f"PRAGMA foreign_key_list({qname})")
         fk_rows = cur.fetchall()
         foreign_keys = [
             {"from_col": row[3], "to_table": row[2], "to_col": row[4]}
@@ -52,7 +55,7 @@ def compile_schema_cache(db_path: str) -> dict:
         ]
 
         # Sample rows — up to 3
-        cur.execute(f"SELECT * FROM {tname} LIMIT 3")
+        cur.execute(f"SELECT * FROM {qname} LIMIT 3")
         sample_rows = [list(row) for row in cur.fetchall()]
 
         tables.append({

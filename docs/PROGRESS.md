@@ -58,8 +58,16 @@ Durable checkpoint log. Each agent appends its outcome here.
 ## CP5 — QLoRA fine-tune
 - status: pending
 
-## CP6 — Phase-B agent harness
-- status: pending
+## CP6 — Phase-B agent harness ✅ 2026-06-20
+- PRAGMA reserved-keyword fix: double-quoted identifiers in table_info, foreign_key_list, SELECT * — all 3 sites fixed in src/schema_cache.py
+- PRAGMA regression test: tests/test_schema_cache_reserved.py — 2 tests, cover table named `order`
+- LangGraph 1.2.6 agent: src/agent/__init__.py + src/agent/loop.py
+- State machine: Compile → Draft → Execute → Loop router (success→END, exhausted→END, retry→Draft)
+- model_fn injected dependency; Execute uses run_query_with_timeout (no gold required)
+- Feedback injection: assistant(wrong SQL) + tool(error/empty note) on retry — mirrors training chains
+- Hard cap: 3 attempts; status ∈ {"success", "exhausted"}
+- Tests: tests/test_agent_loop.py — 4 tests (success@1, success@2 w/ error injection, exhausted@3, empty-result retry)
+- Full suite: 65 tests pass, 0 fail
 
 ## CP7 — Evaluation
 - status: pending
