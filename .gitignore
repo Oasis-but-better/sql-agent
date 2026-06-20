@@ -1,6 +1,16 @@
 # Model weights — too large for git
 models/
 Qwen3.5-4B/
+gemma-4-E4B-it/
+
+# Raw datasets — too large for git (kept locally)
+data/spider/
+data/bird/
+
+# Misc local artifacts
+docs/live.json
+docs/status.json
+progress-tracker.html
 
 # Python
 __pycache__/
