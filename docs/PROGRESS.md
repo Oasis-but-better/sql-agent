@@ -6,8 +6,15 @@ Durable checkpoint log. Each agent appends its outcome here.
 - 9-task TDD build complete. 59 tests pass, 0 fail. 6 src modules + 7 test modules. 10 commits. CONTEXT.md present.
 - Modules: schema_cache, verify, gold_ingest, diversity, generate_examples, build_dataset.
 
-## CP1 — Clean set
-- status: IN PROGRESS
+## CP1 — Clean set ✅ 2026-06-20
+- total in: 10,193 (Spider train_spider 7,000 + train_others 1,659 + BIRD dev 1,534)
+- valid out: 10,071 (98.8%)
+- discarded: 122 (1.2%)
+- distinct DBs: 155
+- discard categories: schema_compile_error 106 (reserved-keyword table name in PRAGMA), timeout 13, other_error 2, no_such_table 1
+- per-source: spider 8,652/8,659 (99.9%), bird 1,419/1,534 (92.5%)
+- clean.jsonl: data/dataset/clean.jsonl — 10,071 lines
+- runner: scripts/build_clean_set.py
 
 ## CP2 — Correction set
 - status: pending
