@@ -55,8 +55,18 @@ Durable checkpoint log. Each agent appends its outcome here.
 - sample generation: prompt=`SELECT 1;` → `-- 1. 创建表` (8 tokens, model responded in Chinese SQL comment style)
 - .gitignore created; models/ and Qwen3.5-4B/ excluded from git
 
-## CP5 — QLoRA fine-tune
-- status: pending
+## CP5 — QLoRA fine-tune 🏃 2026-06-20
+- status: running (PID 16142)
+- base: models/qwen-4bit (Qwen3.5-4B, 4-bit)
+- framework: mlx-lm 0.31.3
+- hyperparams: num-layers=4, batch-size=1, iters=1200, lr=1e-4, max-seq-length=512, grad-checkpoint=true
+- mask-prompt: disabled (--mask-prompt causes nan loss at 512 truncation; system+schema fills most tokens)
+- smoke test: train_loss 1.469→0.937 (20 iters), val 2.224→1.172, 0.14 it/s, peak 10.8 GB, seq-len 512, num-layers 4
+- OOM at: seq-len=1024 + num-layers=8 (Metal OOM abort)
+- adapter-path: adapters/qwen-sql (gitignored)
+- ETA: ~1200 iters × 7.1s/it ≈ 2.4h
+- live metrics: docs/train_live.json (updated every 30s by metrics loop PID 24037)
+- train.log: project root
 
 ## CP6 — Phase-B agent harness ✅ 2026-06-20
 - PRAGMA reserved-keyword fix: double-quoted identifiers in table_info, foreign_key_list, SELECT * — all 3 sites fixed in src/schema_cache.py

@@ -6,6 +6,10 @@ gemma-4-E4B-it/
 # Raw datasets — too large for git (kept locally)
 data/spider/
 data/bird/
+data/mlx/
+
+# Adapter weights — produced by training, not source
+adapters/
 
 # Misc local artifacts
 docs/live.json
