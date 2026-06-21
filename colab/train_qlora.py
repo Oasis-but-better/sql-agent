@@ -14,6 +14,20 @@ DESIGN DECISIONS (T4-specific, compute capability 7.5):
   - LoRA targets all projection layers for maximum coverage.
   - Resume-from-checkpoint: pass --resume-from-checkpoint path or "latest".
 
+BF16 UNSCALE FIX (T4 / CC 7.5):
+  Root cause: accelerate reads ~/.cache/huggingface/accelerate/default_config.yaml
+  at state-singleton init, which happens when from_pretrained(..., device_map="auto")
+  dispatches the model. If that file has mixed_precision: bf16, accelerate's
+  Accelerator is created with bf16 autocast — BEFORE Trainer ever sets its own env.
+  The fp16 GradScaler then calls _amp_foreach_non_finite_check_and_unscale_cuda on
+  bf16 grads → NotImplementedError at step 0 grad-clip.
+  PRIMARY FIX: force ACCELERATE_MIXED_PRECISION=fp16 at module top (hard =, not
+  setdefault) and rename the cached config, both BEFORE any accelerate/transformers
+  import. See: pytorch/pytorch#127176, huggingface/trl#4901, huggingface/transformers#29510.
+  FALLBACK (--no-scaler): fp16=False, bf16=False, no GradScaler at all, entire
+  model cast to fp16 (LoRA included). Crash is structurally impossible. May be
+  less numerically stable — if loss goes NaN, lower --learning-rate to 1e-4.
+
 REQUIRES:
   - transformers>=5.2.0  (qwen3_5 model_type added in v5.2.0)
   - trl>=1.0.0           (SFTConfig stable API with completion_only_loss)
@@ -28,10 +42,35 @@ Usage (Colab):
         --output-dir /drive/adapters/qwen-sql-qlora \
         --base-model Qwen/Qwen3.5-4B
 
+    # If bf16-unscale crash persists after primary fix:
+    python train_qlora.py ... --no-scaler
+
 All hyperparams exposed as argparse flags with T4-tuned defaults.
 """
 
 from __future__ import annotations
+
+# =============================================================================
+# MODULE-TOP BF16 FIX — must run before ANY accelerate/transformers import.
+# device_map="auto" triggers accelerate state-singleton init at model load time,
+# freezing mixed_precision. Setting env here (hard =, not setdefault) and
+# renaming a cached bf16 default_config.yaml are the only reliable intercepts.
+# =============================================================================
+import os as _os
+
+_os.environ["ACCELERATE_MIXED_PRECISION"] = "fp16"
+
+# Rename cached accelerate config that may have mixed_precision: bf16.
+# Rename (not delete) so it is recoverable. Guarded — missing file is fine.
+_accel_cfg = _os.path.expanduser(
+    "~/.cache/huggingface/accelerate/default_config.yaml"
+)
+if _os.path.exists(_accel_cfg):
+    try:
+        _os.rename(_accel_cfg, _accel_cfg + ".bf16_bak")
+        print(f"[bf16-fix] Renamed accelerate config → {_accel_cfg}.bf16_bak")
+    except OSError as _e:
+        print(f"[bf16-fix] WARNING: could not rename accelerate config: {_e}")
 
 import argparse
 import json
@@ -82,6 +121,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dataloader-num-workers", type=int, default=0,
                    help="0 = main process only (safe in Colab).")
+    p.add_argument("--no-scaler", action="store_true",
+                   help="Disable fp16 GradScaler entirely (fp16=False, bf16=False). "
+                        "Casts ALL params including LoRA to float16 to avoid dtype "
+                        "mismatches. Structurally prevents the bf16-unscale crash. "
+                        "May be less numerically stable — lower --learning-rate to "
+                        "1e-4 if loss goes NaN. Use when primary fix still crashes.")
 
     return p.parse_args()
 
@@ -161,10 +206,11 @@ def main() -> None:
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
-        dtype=torch.float16,   # T4: force fp16 non-quant layers; Qwen3.5 config defaults to
-                               # bfloat16, which breaks the fp16 GradScaler (_amp..unscale not
-                               # implemented for BFloat16). fp16 grads match the scaler.
+        torch_dtype=torch.float16,
     )
+
+    # NUCLEAR STEP 1: Override the config so HF Trainer doesn't get confused
+    model.config.torch_dtype = torch.float16
 
     # Required for gradient checkpointing with kbit training
     model = prepare_model_for_kbit_training(model)
@@ -173,8 +219,6 @@ def main() -> None:
 
     # -------------------------------------------------------------------------
     # LoRA config
-    # Qwen3.5-4B has hybrid linear+full attention layers; q/k/v/o/gate/up/down
-    # projections are present in all layer types and confirmed as valid targets.
     # -------------------------------------------------------------------------
     lora_config = LoraConfig(
         r=args.lora_r,
@@ -190,35 +234,39 @@ def main() -> None:
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    # T4 bf16-unscale fix (root cause: Qwen3.5 config.json sets torch_dtype=bfloat16,
-    # so non-quantized modules — norms, embeddings, lm_head — survive as bf16 even
-    # when dtype=torch.float16 is passed to from_pretrained(); their outputs during
-    # the backward pass are also bf16, causing the GradScaler to fail at step 0:
-    #   "NotImplementedError: _amp_foreach_non_finite_check_and_unscale_cuda not
-    #    implemented for 'BFloat16'"
+    # -------------------------------------------------------------------------
+    # Parameter dtype consolidation — ONE canonical loop.
     #
-    # Fix: after get_peft_model(), cast every bf16 floating-point param to fp16.
-    #   - uint8 quantized weights: is_floating_point()==False → skipped automatically.
-    #   - LoRA adapter (requires_grad=True, fp32): kept fp32 — do NOT downcast.
-    #     Casting trainable params to fp16 triggers "Attempting to unscale FP16
-    #     gradients" (the other fp16 scaler error).  fp32 master-weights + fp16
-    #     autocast + GradScaler is the correct standard combo.
-    #   - Non-trainable fp16/bf16 params (norms, embeds, lm_head): cast bf16→fp16
-    #     so activations are consistently fp16 and GradScaler only sees fp32 grads.
+    # Normal mode (default, fp16 GradScaler active):
+    #   - LoRA trainable params → fp32 master weights (correct AMP pattern).
+    #     DO NOT downcast to fp16: triggers "Attempting to unscale FP16 gradients".
+    #   - All other floating params → fp16 if bf16, else unchanged.
+    #     Uint8 quantized weights: is_floating_point()==False → skipped automatically.
+    #   Primary bf16 source: Qwen3.5 config.json sets torch_dtype=bfloat16, so
+    #   norms/embeddings/lm_head survive as bf16 even with torch_dtype=float16 in
+    #   from_pretrained. The accelerate autocast layer (fixed at module top via
+    #   ACCELERATE_MIXED_PRECISION=fp16) is the other bf16 source.
+    #   Evidence: pytorch/pytorch#127176, huggingface/trl#4901.
     #
-    # Also force ACCELERATE_MIXED_PRECISION=fp16 so a cached accelerate
-    # default_config.yaml with mixed_precision=bf16 cannot override Trainer's fp16.
-    import os as _os
-    _os.environ.setdefault("ACCELERATE_MIXED_PRECISION", "fp16")
-
-    # Evidence: pytorch/pytorch#127176 (bf16 unscale unimplemented),
-    #           huggingface/trl#4901 + trl#4902 (dtype fix pattern).
-    for _p in model.parameters():
-        if _p.requires_grad:
-            # LoRA adapter weights: keep fp32 master copy — do NOT downcast
-            continue
-        if _p.is_floating_point() and _p.dtype == torch.bfloat16:
-            _p.data = _p.data.to(torch.float16)
+    # --no-scaler fallback mode (GradScaler disabled entirely):
+    #   - EVERY floating param → fp16, including LoRA.
+    #   - With no scaler there is no unscale call → bf16-unscale crash impossible.
+    #   - Also sets ACCELERATE_MIXED_PRECISION=no so Accelerator skips autocast.
+    # -------------------------------------------------------------------------
+    if args.no_scaler:
+        # Fallback: cast everything to fp16, disable accelerate autocast.
+        _os.environ["ACCELERATE_MIXED_PRECISION"] = "no"
+        for _p in model.parameters():
+            if _p.is_floating_point():
+                _p.data = _p.data.to(torch.float16)
+        print("[--no-scaler] All params cast to fp16. GradScaler disabled.")
+    else:
+        # Normal: fp32 LoRA master weights + fp16 non-trainable params.
+        for _p in model.parameters():
+            if _p.requires_grad:
+                _p.data = _p.data.to(torch.float32)  # LoRA: fp32 master copy
+            elif _p.is_floating_point() and _p.dtype == torch.bfloat16:
+                _p.data = _p.data.to(torch.float16)  # bf16→fp16 (norms, embeds, lm_head)
 
     # -------------------------------------------------------------------------
     # Datasets
@@ -248,7 +296,11 @@ def main() -> None:
     # processing_class replaces tokenizer (deprecated in trl>=0.16, removed 0.17+).
     #
     # packing=False — required for completion_only_loss to work correctly.
+    #
+    # --no-scaler: fp16=False, bf16=False → no GradScaler instantiated.
     # -------------------------------------------------------------------------
+    _use_fp16 = not args.no_scaler   # False when --no-scaler: no GradScaler at all
+
     training_args = SFTConfig(
         output_dir=str(output_dir),
         num_train_epochs=args.num_epochs,
@@ -258,7 +310,7 @@ def main() -> None:
         learning_rate=args.learning_rate,
         warmup_ratio=args.warmup_ratio,
         lr_scheduler_type=args.lr_scheduler,
-        fp16=True,       # T4 requires fp16; bf16=False
+        fp16=_use_fp16,  # False with --no-scaler: disables GradScaler entirely
         bf16=False,
         logging_steps=args.logging_steps,
         eval_strategy="steps",          # renamed from evaluation_strategy in transformers>=4.46
@@ -288,7 +340,7 @@ def main() -> None:
         learning_rate=args.learning_rate,
         warmup_ratio=args.warmup_ratio,
         lr_scheduler_type=args.lr_scheduler,
-        fp16=True,
+        fp16=_use_fp16,
         bf16=False,
         logging_steps=args.logging_steps,
         eval_strategy="steps",
@@ -333,6 +385,19 @@ def main() -> None:
                        key=lambda p: int(p.name.split("-")[-1]))
         resume = str(ckpts[-1]) if ckpts else None
         print(f"Resuming from: {resume}")
+
+    # -------------------------------------------------------------------------
+    # Diagnostic — confirm which autocast + scaler is actually active.
+    # If mixed_precision shows "bf16" here, the cached config fix did not land;
+    # rerun with --no-scaler as the guaranteed fallback.
+    # -------------------------------------------------------------------------
+    _mp = getattr(trainer.accelerator, "mixed_precision", "unknown")
+    _scaler = getattr(trainer.accelerator, "scaler", None)
+    print(f"\n[DIAG] accelerator.mixed_precision = {_mp!r}")
+    print(f"[DIAG] accelerator.scaler           = {_scaler!r}")
+    if _mp == "bf16":
+        print("[DIAG] WARNING: mixed_precision is bf16 — bf16-unscale crash likely! "
+              "Add --no-scaler to bypass GradScaler entirely.")
 
     print("\nStarting training...")
     trainer.train(resume_from_checkpoint=resume)
