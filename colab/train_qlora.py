@@ -190,13 +190,35 @@ def main() -> None:
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    # T4 fix: trainable LoRA params MUST be fp32 so their gradients are fp32.
-    # The fp16 GradScaler cannot unscale bf16 grads
-    # ("_amp_foreach_non_finite_check_and_unscale_cuda not implemented for BFloat16").
-    # Forward still runs in fp16 via autocast; only the tiny (~21M) adapter is fp32.
+    # T4 bf16-unscale fix (root cause: Qwen3.5 config.json sets torch_dtype=bfloat16,
+    # so non-quantized modules — norms, embeddings, lm_head — survive as bf16 even
+    # when dtype=torch.float16 is passed to from_pretrained(); their outputs during
+    # the backward pass are also bf16, causing the GradScaler to fail at step 0:
+    #   "NotImplementedError: _amp_foreach_non_finite_check_and_unscale_cuda not
+    #    implemented for 'BFloat16'"
+    #
+    # Fix: after get_peft_model(), cast every bf16 floating-point param to fp16.
+    #   - uint8 quantized weights: is_floating_point()==False → skipped automatically.
+    #   - LoRA adapter (requires_grad=True, fp32): kept fp32 — do NOT downcast.
+    #     Casting trainable params to fp16 triggers "Attempting to unscale FP16
+    #     gradients" (the other fp16 scaler error).  fp32 master-weights + fp16
+    #     autocast + GradScaler is the correct standard combo.
+    #   - Non-trainable fp16/bf16 params (norms, embeds, lm_head): cast bf16→fp16
+    #     so activations are consistently fp16 and GradScaler only sees fp32 grads.
+    #
+    # Also force ACCELERATE_MIXED_PRECISION=fp16 so a cached accelerate
+    # default_config.yaml with mixed_precision=bf16 cannot override Trainer's fp16.
+    import os as _os
+    _os.environ.setdefault("ACCELERATE_MIXED_PRECISION", "fp16")
+
+    # Evidence: pytorch/pytorch#127176 (bf16 unscale unimplemented),
+    #           huggingface/trl#4901 + trl#4902 (dtype fix pattern).
     for _p in model.parameters():
         if _p.requires_grad:
-            _p.data = _p.data.float()
+            # LoRA adapter weights: keep fp32 master copy — do NOT downcast
+            continue
+        if _p.is_floating_point() and _p.dtype == torch.bfloat16:
+            _p.data = _p.data.to(torch.float16)
 
     # -------------------------------------------------------------------------
     # Datasets
